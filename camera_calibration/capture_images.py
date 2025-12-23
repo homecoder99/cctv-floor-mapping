@@ -7,6 +7,9 @@
 import cv2
 import os
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # RTSP 프로토콜 설정
 # 'tcp' 또는 'udp' 선택 (일반적으로 tcp가 더 안정적)
@@ -22,7 +25,7 @@ CHECKERBOARD_SIZE = (9, 6)  # 내부 코너 개수 (가로, 세로)
 # 카메라 설정
 # 옵션 1: 로컬 웹캠 사용 (기본값)
 # CAMERA_SOURCE = 0
-CAMERA_SOURCE = "..."
+CAMERA_SOURCE = os.getenv('CAMERA_SOURCE')
 
 # 옵션 2: RTSP 스트림 사용 (Tapo C200 등)
 # RTSP URL 형식: rtsp://username:password@ip_address:port/stream1
