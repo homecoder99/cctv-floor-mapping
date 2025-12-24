@@ -23,7 +23,7 @@ class DXFRenderer:
         self.scene = None
         self.layer_colors = {}
 
-    def render_to_image(self, dxf_path, output_size=(2000, 2000), background_color=(255, 255, 255)):
+    def render_to_image(self, dxf_path, output_size=(2000, 2000), background_color=(255, 255, 255), return_metadata=False):
         """
         DXF 파일을 이미지로 렌더링합니다.
 
@@ -31,14 +31,19 @@ class DXFRenderer:
             dxf_path: DXF 파일 경로
             output_size: (width, height) 출력 이미지 크기
             background_color: (R, G, B) 배경색
+            return_metadata: True면 bounds와 변환 정보도 함께 반환
 
         Returns:
-            numpy.ndarray: BGR 형식의 OpenCV 이미지, 실패 시 None
+            return_metadata=False: numpy.ndarray (BGR 이미지), 실패 시 None
+            return_metadata=True: dict {'image': ndarray, 'bounds': tuple, 'y_inverted': bool, 'output_size': tuple}
         """
         try:
             # DXF 파일 로드
             doc = ezdxf.readfile(dxf_path)
             msp = doc.modelspace()
+
+            # DXF 원본 좌표 범위 계산 (CAD 좌표)
+            dxf_bounds = self._calculate_dxf_bounds(msp)
 
             # QGraphicsScene 생성
             self.scene = QGraphicsScene()
@@ -89,7 +94,16 @@ class DXFRenderer:
             # RGB -> BGR 변환 (OpenCV 형식)
             bgr_image = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
-            return bgr_image
+            # 메타데이터와 함께 반환
+            if return_metadata:
+                return {
+                    'image': bgr_image,
+                    'bounds': dxf_bounds,  # (min_x, min_y, max_x, max_y) DXF CAD 좌표
+                    'y_inverted': True,  # 렌더링 시 Y축 반전 (-y)
+                    'output_size': output_size  # (width, height)
+                }
+            else:
+                return bgr_image
 
         except Exception as e:
             print(f"DXF 렌더링 오류: {e}")
@@ -137,6 +151,81 @@ class DXFRenderer:
         for i, layer in enumerate(doc.layers):
             color_index = i % len(default_colors)
             self.layer_colors[layer.dxf.name] = default_colors[color_index]
+
+    def _calculate_dxf_bounds(self, msp):
+        """
+        DXF 엔티티들의 원본 좌표 범위 계산 (CAD 좌표계)
+
+        Args:
+            msp: modelspace
+
+        Returns:
+            (min_x, min_y, max_x, max_y): DXF 원본 좌표 범위
+        """
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = float('-inf'), float('-inf')
+
+        for entity in msp:
+            entity_type = entity.dxftype()
+
+            if entity_type == 'LINE':
+                start = entity.dxf.start
+                end = entity.dxf.end
+                min_x = min(min_x, start.x, end.x)
+                min_y = min(min_y, start.y, end.y)
+                max_x = max(max_x, start.x, end.x)
+                max_y = max(max_y, start.y, end.y)
+
+            elif entity_type == 'LWPOLYLINE':
+                try:
+                    points = list(entity.get_points('xy'))
+                    for x, y in points:
+                        min_x = min(min_x, x)
+                        min_y = min(min_y, y)
+                        max_x = max(max_x, x)
+                        max_y = max(max_y, y)
+                except:
+                    pass
+
+            elif entity_type == 'POLYLINE':
+                try:
+                    points = list(entity.points())
+                    for point in points:
+                        loc = point.dxf.location
+                        min_x = min(min_x, loc.x)
+                        min_y = min(min_y, loc.y)
+                        max_x = max(max_x, loc.x)
+                        max_y = max(max_y, loc.y)
+                except:
+                    pass
+
+            elif entity_type == 'CIRCLE':
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                min_x = min(min_x, center.x - radius)
+                min_y = min(min_y, center.y - radius)
+                max_x = max(max_x, center.x + radius)
+                max_y = max(max_y, center.y + radius)
+
+            elif entity_type == 'ARC':
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                min_x = min(min_x, center.x - radius)
+                min_y = min(min_y, center.y - radius)
+                max_x = max(max_x, center.x + radius)
+                max_y = max(max_y, center.y + radius)
+
+        # 여백 추가 (5%)
+        if min_x != float('inf') and min_y != float('inf'):
+            width = max_x - min_x
+            height = max_y - min_y
+            margin = max(width, height) * 0.05
+            min_x -= margin
+            min_y -= margin
+            max_x += margin
+            max_y += margin
+
+        return (min_x, min_y, max_x, max_y)
 
     def _get_pen(self, entity):
         """엔티티 펜 가져오기"""
@@ -311,7 +400,7 @@ class DXFRenderer:
         text_item.setDefaultTextColor(pen.color())
 
 
-def render_dxf_to_image(dxf_path, output_size=(2000, 2000), background_color=(255, 255, 255)):
+def render_dxf_to_image(dxf_path, output_size=(2000, 2000), background_color=(255, 255, 255), return_metadata=False):
     """
     DXF 파일을 이미지로 렌더링합니다 (편의 함수).
 
@@ -319,9 +408,11 @@ def render_dxf_to_image(dxf_path, output_size=(2000, 2000), background_color=(25
         dxf_path: DXF 파일 경로
         output_size: (width, height) 출력 크기
         background_color: (R, G, B) 배경색
+        return_metadata: True면 bounds와 변환 정보도 함께 반환
 
     Returns:
-        numpy.ndarray: OpenCV 이미지 (BGR), 실패 시 None
+        return_metadata=False: numpy.ndarray (BGR 이미지), 실패 시 None
+        return_metadata=True: dict {'image': ndarray, 'bounds': tuple, 'y_inverted': bool, 'output_size': tuple}
     """
     # QApplication이 없으면 생성
     app = QApplication.instance()
@@ -329,7 +420,7 @@ def render_dxf_to_image(dxf_path, output_size=(2000, 2000), background_color=(25
         app = QApplication(sys.argv)
 
     renderer = DXFRenderer()
-    return renderer.render_to_image(dxf_path, output_size, background_color)
+    return renderer.render_to_image(dxf_path, output_size, background_color, return_metadata)
 
 
 def render_dxf_to_file(dxf_path, output_path, output_size=(2000, 2000), background_color=(255, 255, 255)):

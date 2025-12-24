@@ -52,6 +52,7 @@ class RealtimeTracker:
         zones_path=None,  # 구역 정의 파일 경로 (선택)
         drawing_path=None,  # DXF 도면 파일 경로 (선택)
         drawing_size=(1500, 1500),  # 도면 렌더링 크기
+        flip_drawing_y=False,  # 도면 Y축 반전 여부 (OpenCV 좌표계로 그린 경우 True)
     ):
         """
         Args:
@@ -66,6 +67,7 @@ class RealtimeTracker:
             zones_path: 구역 정의 JSON 파일 경로 (선택)
             drawing_path: DXF 도면 파일 경로 (선택)
             drawing_size: 도면 렌더링 크기 (width, height)
+            flip_drawing_y: 도면 Y축 반전 여부 (OpenCV 좌표계로 그린 DXF는 True)
         """
         # 카메라 캘리브레이션 로드
         print(f"카메라 캘리브레이션 로드: {calibration_path}")
@@ -121,6 +123,15 @@ class RealtimeTracker:
             'fps': 0.0
         }
 
+        # foot_pos 디버깅용 (5초간)
+        self.debug_foot_pos = True
+        self.debug_start_time = None
+        self.debug_foot_x_range = []
+        self.debug_foot_y_range = []
+
+        # drawing_pos 디버깅용 (프레임 1번만)
+        self.debug_drawing_pos_done = False
+
         # 구역 정의 로드 (선택)
         self.zones = []
         if zones_path and os.path.exists(zones_path):
@@ -137,9 +148,14 @@ class RealtimeTracker:
         self.drawing_image = None
         self.drawing_bounds = None  # (min_x, min_y, max_x, max_y)
         self.drawing_size = drawing_size
+        self.flip_drawing_y = flip_drawing_y  # Y축 반전 여부
 
         if drawing_path and os.path.exists(drawing_path):
             print(f"DXF 도면 렌더링 중: {drawing_path}")
+            if flip_drawing_y:
+                print("  - Y축 반전 모드: OpenCV 좌표계")
+            else:
+                print("  - Y축 반전 모드: 표준 CAD 좌표계")
             self._load_drawing(drawing_path)
         else:
             if drawing_path:
@@ -442,14 +458,25 @@ class RealtimeTracker:
 
         x, y = drawing_point
 
+        # 범위 밖 체크 (디버깅용)
+        if x < min_x or x > max_x or y < min_y or y > max_y:
+            if self.stats['frame_count'] % 30 == 0:  # 30프레임마다 경고
+                print(f"경고: 도면 좌표 범위 벗어남 - 입력:({x:.1f},{y:.1f}), "
+                      f"범위:X({min_x:.1f}~{max_x:.1f}), Y({min_y:.1f}~{max_y:.1f})")
+
         # 도면 좌표 → 정규화 좌표 (0~1)
         norm_x = (x - min_x) / (max_x - min_x)
         norm_y = (y - min_y) / (max_y - min_y)
 
         # 정규화 좌표 → 픽셀 좌표
-        # Y축 반전 (DXF는 Y축이 위로 증가, 이미지는 아래로 증가)
         px = int(norm_x * img_w)
-        py = int((1 - norm_y) * img_h)
+
+        if self.flip_drawing_y:
+            # OpenCV 좌표계로 그린 DXF: Y축 반전 안 함
+            py = int(norm_y * img_h)
+        else:
+            # 표준 CAD 좌표계: Y축 반전 (DXF는 Y축이 위로, 이미지는 아래로)
+            py = int((1 - norm_y) * img_h)
 
         # 범위 체크
         px = max(0, min(px, img_w - 1))
@@ -605,6 +632,47 @@ class RealtimeTracker:
                     # 바닥 접점 (호모그래피 변환용)
                     foot_pos = self.get_foot_position(bbox, cls)
 
+                    # foot_pos 디버깅 (5초간)
+                    if self.debug_foot_pos:
+                        if self.debug_start_time is None:
+                            self.debug_start_time = time.time()
+                            print("\n=== foot_pos 디버깅 시작 (5초) ===")
+
+                        elapsed = time.time() - self.debug_start_time
+                        if elapsed < 5.0:
+                            self.debug_foot_x_range.append(foot_pos[0])
+                            self.debug_foot_y_range.append(foot_pos[1])
+                            print(f"[{elapsed:.1f}s] ID:{track_id} foot_pos=({foot_pos[0]:.1f}, {foot_pos[1]:.1f})")
+                        else:
+                            # 5초 경과 - 통계 출력
+                            if self.debug_foot_x_range:
+                                min_x = min(self.debug_foot_x_range)
+                                max_x = max(self.debug_foot_x_range)
+                                min_y = min(self.debug_foot_y_range)
+                                max_y = max(self.debug_foot_y_range)
+                                range_x = max_x - min_x
+                                range_y = max_y - min_y
+
+                                print("\n=== foot_pos 디버깅 결과 (5초) ===")
+                                print(f"X 범위: {min_x:.1f} ~ {max_x:.1f} (범위: {range_x:.1f}px)")
+                                print(f"Y 범위: {min_y:.1f} ~ {max_y:.1f} (범위: {range_y:.1f}px)")
+                                print(f"총 샘플: {len(self.debug_foot_x_range)}개")
+
+                                if range_y < 20:
+                                    print(f"⚠️  Y 범위가 매우 좁음 ({range_y:.1f}px < 20px) - 1D 이동처럼 보일 수 있음")
+                                elif range_y < 30:
+                                    print(f"⚠️  Y 범위가 좁음 ({range_y:.1f}px < 30px)")
+
+                                # Y가 특정 값 근처에 집중되어 있는지 체크
+                                y_std = np.std(self.debug_foot_y_range)
+                                print(f"Y 표준편차: {y_std:.1f}px")
+                                if y_std < 5:
+                                    print(f"⚠️  Y가 거의 고정됨 (std < 5px) - crop/검출 문제 가능성")
+
+                                print("=================================\n")
+
+                            self.debug_foot_pos = False  # 디버깅 종료
+
                     # 속도 계산 (바닥 접점 기준)
                     speed = self.calculate_speed(track_id, foot_pos, time.time())
 
@@ -614,6 +682,54 @@ class RealtimeTracker:
                     # 도면 좌표 변환 (바닥 접점 사용)
                     drawing_pos = self.transform_to_drawing(foot_pos)
                     self.track_history[track_id]['drawing_positions'].append(drawing_pos)
+
+                    # drawing_pos 디버깅 (프레임 1번만)
+                    if not self.debug_drawing_pos_done:
+                        print("\n" + "="*60)
+                        print("=== drawing_pos vs drawing_bounds 체크 ===")
+                        print("="*60)
+                        print(f"foot_pos (영상 좌표): ({foot_pos[0]:.1f}, {foot_pos[1]:.1f})")
+                        print(f"drawing_pos (변환 후): ({drawing_pos[0]:.1f}, {drawing_pos[1]:.1f})")
+
+                        if self.drawing_bounds is not None:
+                            min_x, min_y, max_x, max_y = self.drawing_bounds
+                            print(f"\nDXF drawing_bounds:")
+                            print(f"  X 범위: {min_x:.1f} ~ {max_x:.1f} (폭: {max_x-min_x:.1f})")
+                            print(f"  Y 범위: {min_y:.1f} ~ {max_y:.1f} (높이: {max_y-min_y:.1f})")
+
+                            # drawing_pos가 bounds 범위 내에 있는지 체크
+                            in_bounds_x = min_x <= drawing_pos[0] <= max_x
+                            in_bounds_y = min_y <= drawing_pos[1] <= max_y
+
+                            print(f"\ndrawing_pos가 bounds 내에 있는가?")
+                            print(f"  X: {'✓' if in_bounds_x else '✗'} ({drawing_pos[0]:.1f} vs {min_x:.1f}~{max_x:.1f})")
+                            print(f"  Y: {'✓' if in_bounds_y else '✗'} ({drawing_pos[1]:.1f} vs {min_y:.1f}~{max_y:.1f})")
+
+                            # 좌표계 불일치 진단
+                            if not in_bounds_x or not in_bounds_y:
+                                print(f"\n⚠️  좌표계 불일치 가능성:")
+
+                                # drawing_pos가 픽셀 범위(0~3000)인지 체크
+                                if 0 <= drawing_pos[0] <= 5000 and 0 <= drawing_pos[1] <= 5000:
+                                    print(f"  - drawing_pos는 픽셀 범위 (0~5000)")
+                                else:
+                                    print(f"  - drawing_pos는 픽셀 범위가 아님")
+
+                                # bounds가 mm 단위(큰 값)인지 체크
+                                if max_x - min_x > 10000 or max_y - min_y > 10000:
+                                    print(f"  - drawing_bounds는 mm 단위 (큰 값: {max_x-min_x:.0f} x {max_y-min_y:.0f})")
+                                    print(f"\n✗ 좌표계 불일치 확정!")
+                                    print(f"   호모그래피 대응점을 잘못 찍었을 가능성 높음")
+                                    print(f"   DXF 좌표가 아닌 픽셀 좌표로 대응점을 찍은 것으로 추정")
+                                else:
+                                    print(f"  - drawing_bounds도 작은 범위")
+                            else:
+                                print(f"\n✓ 좌표계 일치 (drawing_pos가 bounds 내에 있음)")
+                        else:
+                            print("\nDXF drawing_bounds: None (도면 없음)")
+
+                        print("="*60 + "\n")
+                        self.debug_drawing_pos_done = True
 
                     # 최근 위치만 유지
                     if len(self.track_history[track_id]['drawing_positions']) > 30:
@@ -1081,6 +1197,11 @@ def main():
         default=[1500, 1500],
         help='도면 렌더링 크기 (width height)'
     )
+    parser.add_argument(
+        '--flip-drawing-y',
+        action='store_true',
+        help='도면 Y축 반전 (DXF를 OpenCV 좌표계로 그린 경우 사용)'
+    )
 
     args = parser.parse_args()
 
@@ -1094,7 +1215,8 @@ def main():
         speed_threshold=args.speed_threshold,
         zones_path=args.zones,
         drawing_path=args.drawing,
-        drawing_size=tuple(args.drawing_size)
+        drawing_size=tuple(args.drawing_size),
+        flip_drawing_y=args.flip_drawing_y
     )
 
     # 실행

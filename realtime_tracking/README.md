@@ -11,9 +11,21 @@ CCTV 영상에서 객체를 검출하고 추적하여 도면 좌표로 변환하
 3. **객체 추적**: ByteTrack 알고리즘으로 프레임 간 객체 추적
 4. **속도 추정**: 객체의 이동 속도 계산
 5. **정적/동적 분리**: 움직이는 객체와 정지한 객체 구분
-6. **좌표 변환**: 호모그래피를 사용한 영상→도면 좌표 변환
+6. **좌표 변환**: 호모그래피를 사용한 영상→도면 좌표 변환 (**v3.0: CAD 좌표계 지원**)
 7. **실시간 시각화**: 검출/추적 결과 실시간 표시
 8. **도면 위 시각화**: DXF 도면 위에 객체 위치 및 이동 경로 표시
+
+### 호모그래피 Version 지원
+
+- **Version 3.0 (권장)**: DXF CAD 좌표계 기반
+  - 영상 픽셀 → DXF CAD 좌표 (mm 단위)
+  - 렌더 크기 독립적
+  - 좌표계 일관성 보장
+
+- **Version 1.0 (레거시)**: 픽셀 좌표 기반
+  - 영상 픽셀 → 도면 픽셀
+  - 렌더 크기에 종속적
+  - 좌표계 불일치 가능성
 
 ### 지원하는 입력 소스
 
@@ -79,9 +91,12 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8m.pt
    - `calibration_data.pkl` 파일 생성
 
 2. **호모그래피 계산** (`homography/`)
-   - `point_collector.py`로 대응점 수집
+   - **권장**: `point_collector_v2.py`로 대응점 수집 (v3.0 - CAD 좌표)
+   - 레거시: `point_collector.py` (v1.0 - 픽셀 좌표)
    - 호모그래피 행렬 계산 및 저장
    - `.json` 파일 생성
+
+> **중요**: Version 3.0 호모그래피 사용 권장 (좌표계 일관성 보장)
 
 ### 2. 기본 실행
 
@@ -92,7 +107,15 @@ python tracker.py \
     --calibration ../camera_calibration/output/calibration_data.pkl \
     --homography ../homography/data/homography_20241224_103000.json \
     --input rtsp://username:password@192.168.1.100:554/stream1
+
+# Version 3.0 호모그래피 사용 시 (권장)
+python tracker.py \
+    --calibration ../camera_calibration/output/calibration_data.pkl \
+    --homography ../homography/data/homography_20251224_175711.json \
+    --input rtsp://username:password@192.168.1.100:554/stream1
 ```
+
+> **참고**: 호모그래피 JSON 파일의 `version` 필드를 확인하세요. Version 3.0은 자동으로 CAD 좌표계를 사용합니다.
 
 #### 비디오 파일 사용
 
@@ -187,6 +210,7 @@ python tracker.py \
 | `--zones` | 구역 정의 JSON 파일 경로 (선택) | None |
 | `--drawing` | DXF 도면 파일 경로 (선택) | None |
 | `--drawing-size` | 도면 렌더링 크기 (width height) | `1500 1500` |
+| `--flip-drawing-y` | 도면 Y축 반전 (레거시 v1.0 전용) | False |
 
 ### 5. YOLO 클래스 ID
 
@@ -274,23 +298,33 @@ drawing_pos = homography.transform_point(foot_pos)  # (X, Y)
 
 **수동 지정**: `--drawing` 파라미터로 명시적으로 DXF 파일 경로를 지정할 수 있습니다.
 
-**처리 과정**:
+**처리 과정 (Version 3.0 호모그래피)**:
 
 1. **DXF 로딩**: ezdxf로 도면 파일 읽기
 2. **좌표 범위 계산**: 도면의 실제 좌표 범위 (min_x, min_y, max_x, max_y) 계산
 3. **도면 렌더링**: DXF를 이미지로 렌더링 (기본 1500x1500px)
-4. **좌표 변환**: 도면 좌표 → 도면 이미지 픽셀 좌표
+4. **좌표 변환**:
+   - 호모그래피 변환: 영상 픽셀 → **DXF CAD 좌표** (v3.0)
+   - 화면 표시: CAD 좌표 → 도면 이미지 픽셀 좌표
 5. **객체 시각화**:
    - 이동 궤적: 선으로 표시 (초록=동적, 회색=정적)
    - 현재 위치: 원으로 표시
    - 라벨: track_id + 클래스명
 
 ```python
-# 도면 좌표를 이미지 픽셀로 변환
-pixel_pos = drawing_coord_to_pixel(drawing_point)
+# Version 3.0: 영상 픽셀 → CAD 좌표 → 도면 픽셀
+drawing_pos_cad = homography.transform_point(foot_pos)  # CAD 좌표 (mm)
+pixel_pos = drawing_coord_to_pixel(drawing_pos_cad)     # 픽셀 좌표
 
 # 도면 이미지에 객체 그리기
 cv2.circle(floor_plan, pixel_pos, 8, color, -1)
+```
+
+**Version 1.0 (레거시)**:
+```python
+# Version 1.0: 영상 픽셀 → 도면 픽셀 (직접)
+drawing_pos_pixel = homography.transform_point(foot_pos)  # 픽셀 좌표
+# drawing-size와 일치해야 함!
 ```
 
 **도면 창 (Floor Plan)**:
@@ -508,6 +542,67 @@ python tracker.py \
 - 신뢰도 임계값 높이기 (`--conf 0.5`)
 - 더 정확한 모델 사용 (`yolov8m.pt`)
 
+### 7. 도면에서 객체가 1D로 이동 (좌표계 불일치)
+
+**증상**:
+- 도면에서 객체가 수평선 또는 수직선으로만 이동
+- `drawing_pos`가 도면 bounds 범위를 벗어남
+- 첫 프레임 로그에 "좌표계 불일치" 경고
+
+**원인**:
+- Version 1.0 (픽셀 좌표) 호모그래피를 사용 중
+- GUI 렌더 크기 (3000x3000) ≠ 실시간 렌더 크기 (1500x1500)
+
+**해결 A (권장): Version 3.0 호모그래피로 재생성**
+```bash
+# 1. 새 호모그래피 생성
+python homography/point_collector_v2.py
+
+# 2. 실시간 추적
+python realtime_tracking/tracker.py \
+  --homography homography/data/homography_new.json \
+  --input video.mp4
+```
+
+**해결 B (임시): 레거시 호모그래피 사용 시**
+```bash
+# GUI와 동일한 렌더 크기 사용
+python tracker.py \
+  --homography homography/data/homography_old.json \
+  --drawing-size 3000 3000 \
+  --flip-drawing-y \
+  --input video.mp4
+```
+
+**디버깅**:
+첫 프레임에서 자동으로 좌표계 체크가 수행됩니다:
+```
+============================================================
+=== drawing_pos vs drawing_bounds 체크 ===
+============================================================
+foot_pos (영상 좌표): (1024.3, 768.5)
+drawing_pos (변환 후): (1280.5, 2450.3)
+
+DXF drawing_bounds:
+  X 범위: 15000.0 ~ 45000.0 (폭: 30000.0)
+  Y 범위: 20000.0 ~ 50000.0 (높이: 30000.0)
+
+drawing_pos가 bounds 내에 있는가?
+  X: ✗ (1280.5 vs 15000.0~45000.0)
+  Y: ✗ (2450.3 vs 20000.0~50000.0)
+
+⚠️  좌표계 불일치 가능성:
+  - drawing_pos는 픽셀 범위 (0~5000)
+  - drawing_bounds는 mm 단위 (큰 값: 30000 x 30000)
+
+✗ 좌표계 불일치 확정!
+   호모그래피 대응점을 잘못 찍었을 가능성 높음
+   DXF 좌표가 아닌 픽셀 좌표로 대응점을 찍은 것으로 추정
+============================================================
+```
+
+위 로그가 나타나면 **Version 3.0 호모그래피로 재생성** 필요합니다.
+
 ## 프로젝트 구조
 
 ```
@@ -527,7 +622,8 @@ realtime_tracking/
    └── validate_calibration.py → 캘리브레이션 검증
 
 2. homography/
-   ├── point_collector.py     → 대응점 수집 GUI
+   ├── point_collector_v2.py  → 대응점 수집 GUI (v3.0 - CAD 좌표) 권장
+   ├── point_collector.py     → 대응점 수집 GUI (v1.0 - 픽셀 좌표) 레거시
    └── data/*.json            → 호모그래피 행렬 저장
 
 3. realtime_tracking/
@@ -661,11 +757,59 @@ python tracker.py \
 6. **포즈 추정**: 사람의 정확한 발 위치 검출 (Keypoint 기반)
 7. **3D 시각화**: 높이 정보를 포함한 3D 도면 위 객체 표시
 
+## 호모그래피 Version 비교
+
+### Version 3.0 (2025-12-24) - CAD 좌표 기반 ✅ 권장
+
+**특징**:
+- `drawing_points`: DXF CAD 좌표 (mm 단위, 수만~수십만 범위)
+- 렌더 크기 독립적
+- 좌표계 일관성 보장
+- JSON 메타데이터에 `dxf_bounds`, `coordinate_system: "CAD"` 포함
+
+**장점**:
+- GUI 렌더 크기(3000) ≠ 실시간 렌더 크기(1500) 무관
+- 좌표 매핑 오류 없음
+- Zone polygon CAD 좌표로 정합
+
+**사용법**:
+```bash
+# 특별한 옵션 없이 기본값 사용
+python tracker.py \
+  --homography homography/data/homography_v3.json \
+  --input video.mp4
+```
+
+### Version 1.0 (2024-12-24) - 픽셀 좌표 기반 ⚠️ 레거시
+
+**특징**:
+- `drawing_points`: 픽셀 좌표 (0~3000 범위)
+- 렌더 크기에 종속적
+- 좌표계 불일치 가능
+
+**문제점**:
+- GUI 렌더 크기(3000) ≠ 실시간 렌더 크기(1500) → **2배 스케일 차이**
+- 1D 이동 현상 발생
+- 좌표 매핑 오류
+
+**임시 해결책**:
+```bash
+# GUI와 동일한 렌더 크기 사용
+python tracker.py \
+  --homography homography/data/homography_v1.json \
+  --drawing-size 3000 3000 \
+  --flip-drawing-y \
+  --input video.mp4
+```
+
+**권장**: Version 3.0으로 재생성
+
 ## 참고 자료
 
 - [YOLOv8 Documentation](https://docs.ultralytics.com/)
 - [ByteTrack Paper](https://arxiv.org/abs/2110.06864)
 - [OpenCV Tracking](https://docs.opencv.org/4.x/d9/df8/group__tracking.html)
+- [Homography README](../homography/README.md) - 호모그래피 버전 상세 설명
 
 ## 라이선스
 

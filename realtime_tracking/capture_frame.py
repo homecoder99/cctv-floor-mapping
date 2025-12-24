@@ -85,45 +85,83 @@ def capture_frame(
             for _ in range(skip_frames):
                 cap.grab()
 
-        # 프레임 읽기
-        ret, frame = cap.read()
-        if not ret:
-            print("오류: 프레임 읽기 실패")
-            return False
+        print(f"연결 성공!")
 
-        print(f"프레임 캡처 성공: {frame.shape[1]}x{frame.shape[0]}")
-
-        # 왜곡 보정 (선택)
-        if camera_matrix is not None and dist_coeffs is not None:
-            h, w = frame.shape[:2]
-            new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
-                camera_matrix, dist_coeffs, (w, h), 1, (w, h)
-            )
-            frame = cv2.undistort(
-                frame, camera_matrix, dist_coeffs, None, new_camera_matrix
-            )
-            print("왜곡 보정 적용됨")
-
-        # 미리보기
+        # 미리보기 모드: 라이브 스트림 표시
         if preview:
-            print("\n미리보기:")
-            print("  - 's' 키: 저장")
+            print("\n라이브 미리보기:")
+            print("  - 's' 키: 현재 프레임 저장")
             print("  - 'q' 키: 취소")
             print("  - ESC 키: 취소")
 
+            frame_to_save = None
+
             while True:
-                cv2.imshow('Captured Frame', frame)
+                # 프레임 읽기
+                ret, frame = cap.read()
+                if not ret:
+                    print("\n프레임 읽기 실패")
+                    break
+
+                # 왜곡 보정 (선택)
+                if camera_matrix is not None and dist_coeffs is not None:
+                    h, w = frame.shape[:2]
+                    new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+                        camera_matrix, dist_coeffs, (w, h), 1, (w, h)
+                    )
+                    frame = cv2.undistort(
+                        frame, camera_matrix, dist_coeffs, None, new_camera_matrix
+                    )
+
+                # 라이브 스트림 표시
+                display_frame = frame.copy()
+                cv2.putText(
+                    display_frame,
+                    "Press 's' to save, 'q' to quit",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 255, 0), 2
+                )
+                cv2.imshow('Live Preview - Press S to Capture', display_frame)
+
                 key = cv2.waitKey(1) & 0xFF
 
                 if key == ord('s'):
-                    print("저장 선택")
+                    frame_to_save = frame.copy()
+                    print(f"\n프레임 캡처됨: {frame.shape[1]}x{frame.shape[0]}")
                     break
                 elif key == ord('q') or key == 27:  # ESC
-                    print("취소됨")
+                    print("\n취소됨")
                     cv2.destroyAllWindows()
                     return False
 
             cv2.destroyAllWindows()
+
+            if frame_to_save is None:
+                print("캡처된 프레임이 없습니다")
+                return False
+
+            frame = frame_to_save
+
+        else:
+            # 미리보기 없이 바로 캡처
+            ret, frame = cap.read()
+            if not ret:
+                print("오류: 프레임 읽기 실패")
+                return False
+
+            print(f"프레임 캡처 성공: {frame.shape[1]}x{frame.shape[0]}")
+
+            # 왜곡 보정 (선택)
+            if camera_matrix is not None and dist_coeffs is not None:
+                h, w = frame.shape[:2]
+                new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+                    camera_matrix, dist_coeffs, (w, h), 1, (w, h)
+                )
+                frame = cv2.undistort(
+                    frame, camera_matrix, dist_coeffs, None, new_camera_matrix
+                )
+                print("왜곡 보정 적용됨")
 
         # 출력 경로 생성
         if output_path is None:
